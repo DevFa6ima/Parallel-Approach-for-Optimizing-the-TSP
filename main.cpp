@@ -4,6 +4,8 @@
 #include <time.h>       /* clock_t, clock, CLOCKS_PER_SEC */
 #include <string.h>     /* strcat */
 #include <math.h>       /* math calc */
+#include <omp.h>
+#include <float.h>      
 
 #define INPUT_FILE_NAME "input.txt"
 #define NUMCITY 15      // Max number of input cities
@@ -24,7 +26,7 @@ void scramble(City cities[], City *pivot, int numCities);   // Generate all comb
 void target_function(City cities[]);                         // Get final smallest value by comparison
 float tour_length(City cities[]);                            // Get total tour length
 
-float shortestTourLength = _FLT_MAX_; // Initialize to max float
+float shortestTourLength = FLT_MAX; 
 City shortestTour[NUMCITY];
 int total_no_of_input = 0;
 
@@ -39,7 +41,7 @@ int main() {
     
     shortestTourLength = tour_length(cities);    // Generate initial value - not final
     copy_tour(shortestTour, cities);
-    scramble(cities, cities, total_no_of_input);
+    scramble(cities, cities, total_no_of_input);  // Parallelized section
     printf("Found the shortest tour:\n");
     print_cities(shortestTour);
     printf("Length is: %f\n", shortestTourLength);
@@ -90,55 +92,63 @@ void generate(City cities[]) {
 }
 
 
-//tour_length()
-//Purpose: calculates the total length of a tour that visits a sequence of cities provided in the cities array. 
-//Opportunity for parallelization: Fine-grained tasks like computing distances between city pairs are more sutiable to parallel processing.
-
+// tour_length()
+// Purpose: calculates the total length of a tour that visits a sequence of cities provided in the cities array. 
+// Opportunity for parallelization: Fine-grained tasks like computing distances between city pairs are suitable for parallel processing.
 
 float tour_length(City cities[]) {
     int i;
     float length = 0.0;
-    for (i = 0; i < total_no_of_input - 1; i++)
-        length += distance(cities[i], cities[i + 1]);
-    length += distance(cities[total_no_of_input - 1], cities[0]);
+    
+    // Parallelization of the loop calculating the distance between cities
+    // Race condition occurs here: multiple threads updating `length`
+    #pragma omp parallel for
+    for (i = 0; i < total_no_of_input - 1; i++) {
+        length += distance(cities[i], cities[i + 1]);  
+    }
+    length += distance(cities[total_no_of_input - 1], cities[0]); // Still a shared variable with potential race
     return length;
 }
 
 void target_function(City cities[]) {
-    float length = tour_length(cities);
-    if (length < shortestTourLength) {
-        shortestTourLength = length;
-        copy_tour(shortestTour, cities);
+    #pragma omp parallel
+    {
+        float length = tour_length(cities);
+        
+        // Race condition here: multiple threads updating shortestTourLength and shortestTour
+        if (length < shortestTourLength) {  // This will cause race conditions
+            shortestTourLength = length;
+            copy_tour(shortestTour, cities);
+        }
     }
 }
 
-
-//void scramble()
-//purpose: Function for generate and evaluate all possible permutations of cities to find the optimal tour.
-//Opportunity for parallelization: The scramble function can be parallelized to explore multiple combinations simultaneously, since they are independent, that's potentially reducing the overall computation time.
-
-
-
+// scramble()
+// Purpose: Function for generating and evaluating all possible permutations of cities to find the optimal tour.
+// Opportunity for parallelization: The scramble function can be parallelized to explore multiple combinations simultaneously, since they are independent.
 
 void scramble(City cities[], City *pivot, int numCities) {
     int i;
     City *newPivot;
-    if (numCities <= 1) { // Scrambled! Call the target function
+    if (numCities <= 1) {
         target_function(cities);
         return;
     }
+
+    // Parallelizing the loop over possible permutations of cities
+    // Race condition here as different threads modify the `cities` array
+    #pragma omp parallel for
     for (i = 0; i < numCities; i++) {
         newPivot = &pivot[1];
-        scramble(cities, newPivot, numCities - 1);
+        scramble(cities, newPivot, numCities - 1);  // This will run in parallel but cause race conditions
         circ_perm(pivot, numCities);
     }
 }
 
-
-//void circ_perm()
-//Function for performing circular permutations of cities
-//purpose: It shifts the order of cities cyclically to generate different tour sequences.
-//Opportunity for parallelization: Generating or evaluating routes (tours) can be distributed across threads or processes since each tour is independent.
+// circ_perm()
+// Function for performing circular permutations of cities
+// Purpose: It shifts the order of cities cyclically to generate different tour sequences.
+// Opportunity for parallelization: Generating or evaluating routes (tours) can be distributed across threads or processes since each tour is independent.
 
 void circ_perm(City cities[], int numCities) {
     int i;
@@ -160,12 +170,9 @@ void copy_City(City dest, City source) {
     dest[1] = source[1];
 }
 
-
-//float distance()
-//purpose: Function to calculate the distance between two cities.
-//Opportunity for parallelization: distance calculations between cities can be beneficial when dealing with a large number of cities, especially in scenarios where these calculations are independent of each other. 
-
-
+// distance()
+// Purpose: Function to calculate the distance between two cities.
+// Opportunity for parallelization: distance calculations between cities can be parallelized for large numbers of cities, especially since they are independent of each other.
 
 float distance(City city1, City city2) {
     return sqrtf((float)square(city2[0] - city1[0]) +
